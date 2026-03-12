@@ -1,14 +1,11 @@
+<h1 align="center">quezt</h1>
+
 <p align="center">
-  <img src="https://raw.githubusercontent.com/yoorquezt-labs/quezt/master/assets/logo.png" alt="quezt" width="120">
-  <br>
-  <strong>quezt</strong><br>
   <em>MEV terminal dashboard by <a href="https://yoorquezt.com">YoorQuezt</a></em>
 </p>
 
 <p align="center">
-  <a href="https://github.com/yoorquezt-labs/quezt/releases"><img src="https://img.shields.io/github/v/release/yoorquezt-labs/quezt?style=flat-square&color=7C3AED" alt="Release"></a>
-  <a href="https://github.com/yoorquezt-labs/quezt/actions"><img src="https://img.shields.io/github/actions/workflow/status/yoorquezt-labs/quezt/release.yaml?style=flat-square" alt="CI"></a>
-  <a href="https://www.npmjs.com/package/quezt"><img src="https://img.shields.io/npm/v/quezt?style=flat-square&color=06B6D4" alt="npm"></a>
+  <a href="https://github.com/yoorquezt-labs/quezt"><img src="https://img.shields.io/badge/go-1.24+-00ADD8?style=flat-square&logo=go" alt="Go"></a>
   <a href="https://goreportcard.com/report/github.com/yoorquezt-labs/quezt"><img src="https://goreportcard.com/badge/github.com/yoorquezt-labs/quezt?style=flat-square" alt="Go Report"></a>
   <a href="https://github.com/yoorquezt-labs/quezt/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License"></a>
 </p>
