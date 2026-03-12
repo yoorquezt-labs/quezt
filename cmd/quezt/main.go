@@ -167,6 +167,20 @@ type bundleEntry struct {
 	Reverted       string
 	Timestamp      int64
 	Chain          string
+	TargetBlock    string
+}
+
+// bundleStats holds aggregated monitoring metrics for the bundle pool.
+type bundleStats struct {
+	totalBundles  int
+	simulatedPct  float64
+	revertedPct   float64
+	avgBidWei     int64
+	maxBidWei     int64
+	minBidWei     int64
+	totalValueWei int64
+	bidHistory    []int64 // last 60 bid values for sparkline trend
+	byBlock       map[string]int
 }
 
 type blockEntry struct {
@@ -292,7 +306,11 @@ type model struct {
 	dashboard dashboardData
 
 	// Data
-	bundles     []bundleEntry
+	bundles      []bundleEntry
+	bundleStats  bundleStats
+	bundlePaused bool
+	bundleSort   int // 0=value-desc, 1=time-desc, 2=id
+	bundleAlertThreshold int64 // alert when bid exceeds this (wei)
 	blocks      []blockEntry
 	blockDetail json.RawMessage
 	relays      []map[string]any
@@ -623,6 +641,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			cmds = append(cmds, m.fetchCurrentView())
 
+		case " ":
+			if m.currentView == viewBundles {
+				m.bundlePaused = !m.bundlePaused
+			}
+
+		case "s":
+			if m.currentView == viewBundles {
+				m.bundleSort = (m.bundleSort + 1) % 3
+			}
+
 		// Vim navigation
 		case "j", "down":
 			m.cursorDown()
@@ -703,7 +731,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case wsEventMsg:
 		m.wsEvents++
 		cmds = append(cmds, readWSCmd(m.wsCh))
-		if m.currentView == viewDashboard || m.currentView == viewBundles || m.currentView == viewTrader {
+		if m.currentView == viewDashboard || m.currentView == viewTrader {
+			cmds = append(cmds, m.fetchCurrentView())
+		}
+		if m.currentView == viewBundles && !m.bundlePaused {
 			cmds = append(cmds, m.fetchCurrentView())
 		}
 		if m.currentView == viewTrader {
@@ -728,8 +759,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case bundlesMsg:
 		if msg.err == nil {
 			m.bundles = msg.bundles
+			m.bundleStats = computeBundleStats(msg.bundles, m.bundleStats.bidHistory)
 			m.lastFetch = time.Now()
 			m.err = nil
+			// Bell alert for high-value bundles
+			if m.bundleAlertThreshold > 0 && m.bundleStats.maxBidWei >= m.bundleAlertThreshold {
+				fmt.Print("\a") // terminal bell
+			}
 		} else {
 			m.err = msg.err
 		}
@@ -1742,7 +1778,16 @@ func renderHealthBar(d dashboardData, width int) string {
 
 func (m model) viewBundlesContent() string {
 	var sb strings.Builder
-	sb.WriteString(titleStyle.Render(fmt.Sprintf("Auction Pool (%d bundles)", len(m.bundles))))
+	st := m.bundleStats
+
+	// ── Title + status ──
+	titleParts := fmt.Sprintf("Auction Pool (%d bundles)", st.totalBundles)
+	if m.bundlePaused {
+		titleParts += "  " + statusDegraded.Render("⏸ PAUSED")
+	} else {
+		titleParts += "  " + statusHealthy.Render("● LIVE")
+	}
+	sb.WriteString(titleStyle.Render(titleParts))
 	sb.WriteString("\n\n")
 
 	if len(m.bundles) == 0 {
@@ -1750,27 +1795,103 @@ func (m model) viewBundlesContent() string {
 		return sb.String()
 	}
 
-	// Find max bid for sparkline normalization
-	maxBid := int64(1)
-	for _, b := range m.bundles {
-		v := parseBigInt(b.BidWei)
-		if v > maxBid {
-			maxBid = v
+	// ── Aggregated stats panel ──
+	statLine1 := fmt.Sprintf("  Avg Bid: %s  │  Max: %s  │  Min: %s  │  Pool Value: %s",
+		weiToETH(fmt.Sprintf("%d", st.avgBidWei)),
+		weiToETH(fmt.Sprintf("%d", st.maxBidWei)),
+		weiToETH(fmt.Sprintf("%d", st.minBidWei)),
+		weiToETH(fmt.Sprintf("%d", st.totalValueWei)),
+	)
+	sb.WriteString(lipgloss.NewStyle().Foreground(colorText).Render(statLine1))
+	sb.WriteString("\n")
+
+	simStyle := statusHealthy
+	if st.simulatedPct < 50 {
+		simStyle = statusDegraded
+	}
+	revStyle := statusHealthy
+	if st.revertedPct > 20 {
+		revStyle = statusCritical
+	} else if st.revertedPct > 5 {
+		revStyle = statusDegraded
+	}
+	statLine2 := fmt.Sprintf("  Simulated: %s  │  Reverted: %s  │  Blocks targeted: %d",
+		simStyle.Render(fmt.Sprintf("%.0f%%", st.simulatedPct)),
+		revStyle.Render(fmt.Sprintf("%.0f%%", st.revertedPct)),
+		len(st.byBlock),
+	)
+	sb.WriteString(lipgloss.NewStyle().Foreground(colorText).Render(statLine2))
+	sb.WriteString("\n")
+
+	// ── Bid trend sparkline ──
+	if len(st.bidHistory) > 1 {
+		trendW := 30
+		if m.width > 60 {
+			trendW = 40
 		}
+		sb.WriteString(mutedStyle.Render("  Bid trend (60s): "))
+		sb.WriteString(trendSparkline(st.bidHistory, trendW))
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\n")
+
+	// ── Top 3 highest bids banner ──
+	top3 := m.sortedBundles()
+	if len(top3) > 3 {
+		top3 = top3[:3]
+	}
+	sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(colorWarning).Render("  🏆 Top Bids"))
+	sb.WriteString("\n")
+	for i, b := range top3 {
+		medal := []string{"🥇", "🥈", "🥉"}[i]
+		sb.WriteString(fmt.Sprintf("  %s %s  %s  %s\n",
+			medal,
+			trunc(b.ID, 16),
+			lipgloss.NewStyle().Bold(true).Foreground(colorSuccess).Render(weiToETH(b.EffectiveValue)),
+			mutedStyle.Render(timeAgo(b.Timestamp)),
+		))
+	}
+	sb.WriteString("\n")
+
+	// ── Sort indicator + controls ──
+	controls := fmt.Sprintf("  sort: %s (s)  │  %s (space)  │  filter: / ",
+		lipgloss.NewStyle().Bold(true).Foreground(colorSecondary).Render(sortLabel(m.bundleSort)),
+		func() string {
+			if m.bundlePaused {
+				return "resume"
+			}
+			return "pause"
+		}(),
+	)
+	sb.WriteString(mutedStyle.Render(controls))
+	sb.WriteString("\n\n")
+
+	// ── Bundle table ──
+	maxBid := int64(1)
+	if st.maxBidWei > 0 {
+		maxBid = st.maxBidWei
 	}
 
-	barW := 12
-	hdr := fmt.Sprintf("  %-20s %-14s %-14s %-5s %-5s %s",
-		"Bundle ID", "Bid (wei)", "Value", "Sim", "Rev", "Bid")
+	barW := 10
+	hdr := fmt.Sprintf("  %-18s %-14s %-14s %-8s %-5s %-5s %s",
+		"Bundle ID", "Bid", "Value", "Age", "Sim", "Rev", "Bid")
 	sb.WriteString(headerStyle.Width(m.width).Render(hdr))
 	sb.WriteString("\n")
 
-	for i, b := range m.filteredBundles() {
+	sorted := m.sortedBundles()
+	for i, b := range sorted {
 		prefix := "  "
 		style := normalStyle
 		if i == m.bundleCursor {
 			prefix = "▸ "
 			style = selectedStyle
+		}
+
+		// Color rows by status
+		if b.Reverted == "true" {
+			style = style.Foreground(colorDanger)
+		} else if b.Simulated == "true" {
+			style = style.Foreground(colorSuccess)
 		}
 
 		bidPct := int(parseBigInt(b.BidWei) * 100 / maxBid)
@@ -1783,11 +1904,12 @@ func (m model) viewBundlesContent() string {
 			revIcon = statusCritical.Render("✗")
 		}
 
-		line := fmt.Sprintf("%s%-20s %-14s %-14s %-5s %-5s %s",
+		line := fmt.Sprintf("%s%-18s %-14s %-14s %-8s %-5s %-5s %s",
 			prefix,
-			trunc(b.ID, 20),
-			b.BidWei,
-			b.EffectiveValue,
+			trunc(b.ID, 18),
+			weiToETH(b.BidWei),
+			weiToETH(b.EffectiveValue),
+			timeAgo(b.Timestamp),
 			simIcon,
 			revIcon,
 			sparkBar(bidPct, barW),
@@ -1914,22 +2036,34 @@ func (m model) viewBlockDetailContent() string {
 // ---------------------------------------------------------------------------
 
 func (m model) viewBundleDetailContent() string {
-	if m.bundleCursor >= len(m.bundles) {
+	sorted := m.sortedBundles()
+	if m.bundleCursor >= len(sorted) {
 		return mutedStyle.Render("  No bundle selected")
 	}
-	b := m.bundles[m.bundleCursor]
+	b := sorted[m.bundleCursor]
 
 	var sb strings.Builder
 	sb.WriteString(titleStyle.Render("Bundle Detail"))
 	sb.WriteString("\n\n")
 
+	// Status indicator
+	statusLine := "  Status: "
+	if b.Reverted == "true" {
+		statusLine += statusCritical.Render("⊘ REVERTED")
+	} else if b.Simulated == "true" {
+		statusLine += statusHealthy.Render("✓ SIMULATED")
+	} else {
+		statusLine += statusDegraded.Render("◷ PENDING SIM")
+	}
+	sb.WriteString(statusLine + "\n\n")
+
 	lines := []struct{ k, v string }{
 		{"Bundle ID", b.ID},
-		{"Bid (wei)", b.BidWei},
-		{"Effective Value", b.EffectiveValue},
-		{"Simulated", b.Simulated},
-		{"Reverted", b.Reverted},
+		{"Bid", weiToETH(b.BidWei) + "  (" + b.BidWei + " wei)"},
+		{"Effective Value", weiToETH(b.EffectiveValue) + "  (" + b.EffectiveValue + " wei)"},
 		{"Chain", b.Chain},
+		{"Target Block", b.TargetBlock},
+		{"Age", timeAgo(b.Timestamp)},
 		{"Timestamp", formatTimestamp(b.Timestamp)},
 	}
 
@@ -1941,10 +2075,48 @@ func (m model) viewBundleDetailContent() string {
 	}
 
 	for _, l := range lines {
+		if l.v == "" || l.v == "  ( wei)" {
+			continue
+		}
 		label := mutedStyle.Render(fmt.Sprintf("  %-*s  ", maxK, l.k))
 		val := normalStyle.Render(l.v)
 		sb.WriteString(label + val + "\n")
 	}
+
+	// Bid comparison vs pool
+	if m.bundleStats.maxBidWei > 0 {
+		bidVal := parseBigInt(b.BidWei)
+		pctOfMax := float64(bidVal) / float64(m.bundleStats.maxBidWei) * 100
+		pctOfAvg := float64(bidVal) / float64(m.bundleStats.avgBidWei) * 100
+
+		sb.WriteString("\n")
+		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(colorSecondary).Render("  Pool Comparison"))
+		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf("  vs max bid:  %s  %s\n",
+			fmt.Sprintf("%.0f%%", pctOfMax),
+			sparkBar(int(pctOfMax), 20),
+		))
+		sb.WriteString(fmt.Sprintf("  vs avg bid:  %s  %s\n",
+			fmt.Sprintf("%.0f%%", pctOfAvg),
+			sparkBar(clamp(int(pctOfAvg), 0, 100), 20),
+		))
+	}
+
+	// Revert diagnostics for searchers
+	if b.Reverted == "true" {
+		sb.WriteString("\n")
+		sb.WriteString(statusCritical.Render("  ⚠ Revert Analysis"))
+		sb.WriteString("\n")
+		sb.WriteString(mutedStyle.Render("  Possible causes:\n"))
+		sb.WriteString(mutedStyle.Render("  • Stale state — pool reserves changed before inclusion\n"))
+		sb.WriteString(mutedStyle.Render("  • Insufficient gas — bid didn't cover execution cost\n"))
+		sb.WriteString(mutedStyle.Render("  • Frontrun — another searcher landed first\n"))
+		sb.WriteString(mutedStyle.Render("  • Slippage — price moved beyond tolerance\n"))
+		sb.WriteString(mutedStyle.Render("  Tip: Use `quezt bundle simulate` to pre-check\n"))
+	}
+
+	sb.WriteString("\n")
+	sb.WriteString(mutedStyle.Render("  esc: back  │  j/k: navigate  │  enter: select"))
 
 	return sb.String()
 }
@@ -2629,6 +2801,166 @@ func formatTimestamp(ts int64) string {
 		return "-"
 	}
 	return time.Unix(ts, 0).Format("2006-01-02 15:04:05")
+}
+
+func weiToETH(weiStr string) string {
+	v := parseBigInt(weiStr)
+	if v == 0 {
+		return "0 ETH"
+	}
+	eth := float64(v) / 1e18
+	if eth >= 1.0 {
+		return fmt.Sprintf("%.4f ETH", eth)
+	}
+	if eth >= 0.001 {
+		return fmt.Sprintf("%.6f ETH", eth)
+	}
+	// Show in gwei for tiny amounts
+	gwei := float64(v) / 1e9
+	if gwei >= 1.0 {
+		return fmt.Sprintf("%.2f gwei", gwei)
+	}
+	return fmt.Sprintf("%d wei", v)
+}
+
+func timeAgo(ts int64) string {
+	if ts == 0 {
+		return "-"
+	}
+	d := time.Since(time.Unix(ts, 0))
+	switch {
+	case d < time.Second:
+		return "now"
+	case d < time.Minute:
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	}
+}
+
+func computeBundleStats(bundles []bundleEntry, prevHistory []int64) bundleStats {
+	s := bundleStats{
+		totalBundles: len(bundles),
+		byBlock:      make(map[string]int),
+		minBidWei:    1<<63 - 1,
+	}
+	if len(bundles) == 0 {
+		s.minBidWei = 0
+		return s
+	}
+
+	var simCount, revCount int
+	var totalBid int64
+	for _, b := range bundles {
+		v := parseBigInt(b.BidWei)
+		totalBid += v
+		if v > s.maxBidWei {
+			s.maxBidWei = v
+		}
+		if v < s.minBidWei {
+			s.minBidWei = v
+		}
+		s.totalValueWei += parseBigInt(b.EffectiveValue)
+		if b.Simulated == "true" {
+			simCount++
+		}
+		if b.Reverted == "true" {
+			revCount++
+		}
+		if b.TargetBlock != "" {
+			s.byBlock[b.TargetBlock]++
+		}
+	}
+	s.avgBidWei = totalBid / int64(len(bundles))
+	s.simulatedPct = float64(simCount) / float64(len(bundles)) * 100
+	s.revertedPct = float64(revCount) / float64(len(bundles)) * 100
+
+	// Append current max bid to history, keep last 60 entries
+	s.bidHistory = append(prevHistory, s.maxBidWei)
+	if len(s.bidHistory) > 60 {
+		s.bidHistory = s.bidHistory[len(s.bidHistory)-60:]
+	}
+	return s
+}
+
+// trendSparkline renders a mini sparkline chart from a series of values.
+func trendSparkline(values []int64, width int) string {
+	if len(values) == 0 {
+		return mutedStyle.Render(strings.Repeat("·", width))
+	}
+	sparks := []rune{'▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
+
+	// Find range
+	minV, maxV := values[0], values[0]
+	for _, v := range values {
+		if v < minV {
+			minV = v
+		}
+		if v > maxV {
+			maxV = v
+		}
+	}
+
+	span := maxV - minV
+	if span == 0 {
+		span = 1
+	}
+
+	// Sample values to fit width
+	var result strings.Builder
+	step := len(values) / width
+	if step < 1 {
+		step = 1
+	}
+	for i := 0; i < width && i*step < len(values); i++ {
+		idx := i * step
+		level := int((values[idx] - minV) * 7 / span)
+		if level < 0 {
+			level = 0
+		}
+		if level > 7 {
+			level = 7
+		}
+		result.WriteRune(sparks[level])
+	}
+	// Pad if needed
+	for result.Len() < width {
+		result.WriteRune(sparks[0])
+	}
+	return lipgloss.NewStyle().Foreground(colorSecondary).Render(result.String())
+}
+
+func (m model) sortedBundles() []bundleEntry {
+	filtered := m.filteredBundles()
+	sorted := make([]bundleEntry, len(filtered))
+	copy(sorted, filtered)
+
+	switch m.bundleSort {
+	case 0: // value desc
+		sort.Slice(sorted, func(i, j int) bool {
+			return parseBigInt(sorted[i].EffectiveValue) > parseBigInt(sorted[j].EffectiveValue)
+		})
+	case 1: // time desc (newest first)
+		sort.Slice(sorted, func(i, j int) bool {
+			return sorted[i].Timestamp > sorted[j].Timestamp
+		})
+	case 2: // id (default)
+		// keep original order
+	}
+	return sorted
+}
+
+func sortLabel(idx int) string {
+	switch idx {
+	case 0:
+		return "value"
+	case 1:
+		return "time"
+	default:
+		return "default"
+	}
 }
 
 func statusFromCount(n int) string {
