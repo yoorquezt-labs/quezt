@@ -123,6 +123,7 @@ const (
 	viewLogs
 	viewOFA
 	viewTrader
+	viewTrading
 	viewQAI
 	viewModelPicker
 )
@@ -210,6 +211,41 @@ type traderSubmission struct {
 	Timestamp int64
 }
 
+// Trading types
+
+type tradingSubTab int
+
+const (
+	tradingSubSwap tradingSubTab = iota
+	tradingSubPositions
+	tradingSubPortfolio
+)
+
+type positionEntry struct {
+	Pair       string
+	Chain      string
+	Side       string // "long" / "short"
+	EntryPrice string
+	MarkPrice  string
+	Size       string
+	PnL        string
+	PnLPct     string
+	OpenedAt   int64
+}
+
+type portfolioToken struct {
+	Symbol   string
+	Chain    string
+	Balance  string
+	ValueUSD string
+	PricePct string // 24h change
+}
+
+type swapResult struct {
+	TxHash string
+	Status string
+}
+
 // ---------------------------------------------------------------------------
 // Tea messages
 // ---------------------------------------------------------------------------
@@ -273,6 +309,15 @@ type traderMsg struct {
 type traderSubmitResultMsg struct {
 	bundleID string
 	err      error
+}
+type tradingMsg struct {
+	positions []positionEntry
+	portfolio []portfolioToken
+	err       error
+}
+type swapResultMsg struct {
+	result swapResult
+	err    error
 }
 type commandResultMsg struct {
 	result string
@@ -356,6 +401,20 @@ type model struct {
 	traderTargetInput  textinput.Model
 	traderAuctionEvts  []string
 
+	// Trading
+	tradingSubTab      tradingSubTab
+	tradingPositions   []positionEntry
+	tradingPortfolio   []portfolioToken
+	tradingPosCursor   int
+	tradingPortCursor  int
+	tradingSwapField   int // 0=tokenIn, 1=tokenOut, 2=amount, 3=chain, 4=slippage
+	tradingTokenInInput   textinput.Model
+	tradingTokenOutInput  textinput.Model
+	tradingAmountInput    textinput.Model
+	tradingSwapChainInput textinput.Model
+	tradingSlippageInput  textinput.Model
+	tradingLastSwap       *swapResult
+
 	// Command mode
 	commandMode       bool
 	commandInput      textinput.Model
@@ -424,6 +483,31 @@ func initialModel(cfg client.Config) model {
 	aiIn.CharLimit = 500
 	aiIn.Width = 60
 
+	tokenInIn := textinput.New()
+	tokenInIn.Placeholder = "WETH"
+	tokenInIn.CharLimit = 20
+	tokenInIn.Width = 20
+
+	tokenOutIn := textinput.New()
+	tokenOutIn.Placeholder = "USDC"
+	tokenOutIn.CharLimit = 20
+	tokenOutIn.Width = 20
+
+	amountIn := textinput.New()
+	amountIn.Placeholder = "1.0"
+	amountIn.CharLimit = 30
+	amountIn.Width = 24
+
+	swapChainIn := textinput.New()
+	swapChainIn.Placeholder = "ethereum"
+	swapChainIn.CharLimit = 20
+	swapChainIn.Width = 20
+
+	slippageIn := textinput.New()
+	slippageIn.Placeholder = "0.5"
+	slippageIn.CharLimit = 6
+	slippageIn.Width = 10
+
 	return model{
 		cfg:              cfg,
 		currentView:      viewSplash,
@@ -436,6 +520,11 @@ func initialModel(cfg client.Config) model {
 		traderTxInput:    txIn,
 		traderTargetInput: targetIn,
 		aiInput:          aiIn,
+		tradingTokenInInput:   tokenInIn,
+		tradingTokenOutInput:  tokenOutIn,
+		tradingAmountInput:    amountIn,
+		tradingSwapChainInput: swapChainIn,
+		tradingSlippageInput:  slippageIn,
 	}
 }
 
@@ -603,6 +692,78 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Trading view input mode
+		if m.currentView == viewTrading {
+			switch msg.String() {
+			case "q", "ctrl+c":
+				if m.client != nil {
+					m.client.Close()
+				}
+				return m, tea.Quit
+			case "esc":
+				return m.goBack()
+			case "1":
+				m.tradingSubTab = tradingSubSwap
+				m.tradingSwapField = 0
+				m.focusTradingField()
+				return m, textinput.Blink
+			case "2":
+				m.tradingSubTab = tradingSubPositions
+				m.blurTradingFields()
+				return m, nil
+			case "3":
+				m.tradingSubTab = tradingSubPortfolio
+				m.blurTradingFields()
+				return m, nil
+			case "tab":
+				if m.tradingSubTab == tradingSubSwap {
+					m.tradingSwapField = (m.tradingSwapField + 1) % 5
+					m.focusTradingField()
+					return m, textinput.Blink
+				}
+			case "shift+tab":
+				if m.tradingSubTab == tradingSubSwap {
+					m.tradingSwapField = (m.tradingSwapField + 4) % 5
+					m.focusTradingField()
+					return m, textinput.Blink
+				}
+			case "j", "down":
+				switch m.tradingSubTab {
+				case tradingSubPositions:
+					if m.tradingPosCursor < len(m.tradingPositions)-1 {
+						m.tradingPosCursor++
+					}
+				case tradingSubPortfolio:
+					if m.tradingPortCursor < len(m.tradingPortfolio)-1 {
+						m.tradingPortCursor++
+					}
+				}
+				return m, nil
+			case "k", "up":
+				switch m.tradingSubTab {
+				case tradingSubPositions:
+					if m.tradingPosCursor > 0 {
+						m.tradingPosCursor--
+					}
+				case tradingSubPortfolio:
+					if m.tradingPortCursor > 0 {
+						m.tradingPortCursor--
+					}
+				}
+				return m, nil
+			case "enter":
+				if m.tradingSubTab == tradingSubSwap {
+					return m.handleSwapSubmit()
+				}
+				return m, nil
+			default:
+				if m.tradingSubTab == tradingSubSwap {
+					return m.updateTradingInput(msg)
+				}
+			}
+			return m, nil
+		}
+
 		// Trader form input mode
 		if m.currentView == viewTrader && m.traderFieldCursor >= 0 {
 			switch msg.String() {
@@ -694,6 +855,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.fetchTrader(), textinput.Blink)
 			return m, tea.Batch(cmds...)
 		case "9":
+			m.currentView = viewTrading
+			m.breadcrumb = []string{"trading"}
+			m.tradingSubTab = tradingSubSwap
+			m.tradingSwapField = 0
+			m.focusTradingField()
+			cmds = append(cmds, m.fetchTrading(), textinput.Blink)
+			return m, tea.Batch(cmds...)
+		case "0":
 			m.currentView = viewQAI
 			m.breadcrumb = []string{"Q AI"}
 			m.aiInput.Focus()
@@ -744,7 +913,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case wsEventMsg:
 		m.wsEvents++
 		cmds = append(cmds, readWSCmd(m.wsCh))
-		if m.currentView == viewDashboard || m.currentView == viewTrader {
+		if m.currentView == viewDashboard || m.currentView == viewTrader || m.currentView == viewTrading {
 			cmds = append(cmds, m.fetchCurrentView())
 		}
 		if m.currentView == viewBundles && !m.bundlePaused {
@@ -836,6 +1005,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else if !strings.Contains(msg.err.Error(), "404") {
 			m.err = msg.err
 		}
+	case tradingMsg:
+		if msg.err == nil {
+			m.tradingPositions = msg.positions
+			m.tradingPortfolio = msg.portfolio
+			m.lastFetch = time.Now()
+			m.err = nil
+		} else if !strings.Contains(msg.err.Error(), "404") {
+			m.err = msg.err
+		}
+	case swapResultMsg:
+		if msg.err == nil {
+			m.tradingLastSwap = &msg.result
+			m.lastCommandResult = fmt.Sprintf("Swap submitted: %s", msg.result.TxHash)
+			m.lastCommandError = false
+			logging.Info("swap executed", "tx_hash", msg.result.TxHash, "status", msg.result.Status)
+		} else {
+			m.lastCommandResult = fmt.Sprintf("Swap failed: %s", msg.err)
+			m.lastCommandError = true
+			logging.Error("swap failed", "error", msg.err)
+		}
+		cmds = append(cmds, m.fetchTrading())
 	case traderMsg:
 		if msg.err == nil {
 			m.traderSubmissions = msg.submissions
@@ -970,7 +1160,7 @@ func (m model) goBack() (model, tea.Cmd) {
 	return m, m.fetchCurrentView()
 }
 
-const dashCardCount = 8
+const dashCardCount = 9
 
 func (m *model) cursorDown() {
 	switch m.currentView {
@@ -1034,6 +1224,7 @@ var dashTargets = []struct {
 	{viewSystem, "system"},
 	{viewOFA, "ofa"},
 	{viewTrader, "trader"},
+	{viewTrading, "trading"},
 	{viewQAI, "Q AI"},
 }
 
@@ -1106,6 +1297,8 @@ func (m model) fetchCurrentView() tea.Cmd {
 		return m.fetchOFA()
 	case viewTrader:
 		return m.fetchTrader()
+	case viewTrading:
+		return m.fetchTrading()
 	}
 	return nil
 }
@@ -1404,6 +1597,63 @@ func (m model) fetchTrader() tea.Cmd {
 	}
 }
 
+func (m model) fetchTrading() tea.Cmd {
+	c := m.client
+	return func() tea.Msg {
+		if c == nil {
+			return tradingMsg{err: fmt.Errorf("not connected")}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+
+		td := tradingMsg{}
+
+		// Positions
+		raw, err := c.Call(ctx, "trade_positions", nil)
+		if err == nil {
+			var resp struct {
+				Positions []map[string]any `json:"positions"`
+			}
+			if json.Unmarshal(raw, &resp) == nil {
+				for _, p := range resp.Positions {
+					td.positions = append(td.positions, positionEntry{
+						Pair:       jstr(p, "pair"),
+						Chain:      jstr(p, "chain"),
+						Side:       jstr(p, "side"),
+						EntryPrice: jstr(p, "entry_price"),
+						MarkPrice:  jstr(p, "mark_price"),
+						Size:       jstr(p, "size"),
+						PnL:        jstr(p, "pnl"),
+						PnLPct:     jstr(p, "pnl_pct"),
+						OpenedAt:   jint(p, "opened_at"),
+					})
+				}
+			}
+		}
+
+		// Portfolio
+		raw, err = c.Call(ctx, "trade_portfolio", nil)
+		if err == nil {
+			var resp struct {
+				Tokens []map[string]any `json:"tokens"`
+			}
+			if json.Unmarshal(raw, &resp) == nil {
+				for _, t := range resp.Tokens {
+					td.portfolio = append(td.portfolio, portfolioToken{
+						Symbol:   jstr(t, "symbol"),
+						Chain:    jstr(t, "chain"),
+						Balance:  jstr(t, "balance"),
+						ValueUSD: jstr(t, "value_usd"),
+						PricePct: jstr(t, "price_pct_24h"),
+					})
+				}
+			}
+		}
+
+		return td
+	}
+}
+
 // WebSocket commands
 
 func subscribeCmd(c *client.Client) tea.Cmd {
@@ -1541,8 +1791,8 @@ func (m model) viewSplash() string {
 	sb.WriteString("  " + val.Render("Navigate with ") + lbl.Render("j/k") + val.Render(" or ") + lbl.Render("↑/↓") + "\n")
 	sb.WriteString("  " + val.Render("Open detail with ") + lbl.Render("enter") + "\n")
 	sb.WriteString("  " + val.Render("Filter with ") + lbl.Render("/") + "\n")
-	sb.WriteString("  " + val.Render("Quick jump ") + lbl.Render("1-8") + val.Render(" · Back ") + lbl.Render("esc") + "\n")
-	sb.WriteString("  " + val.Render("Command mode ") + lbl.Render(":") + val.Render(" · 7:OFA · 8:Trader") + "\n\n")
+	sb.WriteString("  " + val.Render("Quick jump ") + lbl.Render("1-9") + val.Render(" · Back ") + lbl.Render("esc") + "\n")
+	sb.WriteString("  " + val.Render("Command mode ") + lbl.Render(":") + val.Render(" · 8:Trader · 9:Trading · 0:Q AI") + "\n\n")
 
 	connStatus := statusCritical.Render("● disconnected")
 	if m.connected {
@@ -1646,6 +1896,8 @@ func (m model) viewContent() string {
 		return m.viewOFAContent()
 	case viewTrader:
 		return m.viewTraderContent()
+	case viewTrading:
+		return m.viewTradingContent()
 	case viewQAI:
 		return m.viewQAIContent()
 	case viewModelPicker:
@@ -1751,6 +2003,16 @@ func (m model) viewDashboardContent() string {
 				kv("Submissions", fmt.Sprintf("%d", len(m.traderSubmissions))),
 			},
 		},
+		{
+			title:    "Trading",
+			status:   statusFromCount(len(m.tradingPositions)),
+			shortcut: "9",
+			label:    "trading",
+			lines: []string{
+				kv("Positions", fmt.Sprintf("%d", len(m.tradingPositions))),
+				kv("Tokens", fmt.Sprintf("%d", len(m.tradingPortfolio))),
+			},
+		},
 	}
 
 	var cardRows []string
@@ -1772,7 +2034,7 @@ func (m model) viewDashboardContent() string {
 	healthLine := renderHealthBar(m.dashboard, m.width-6)
 
 	return healthLine + "\n\n" + grid + "\n\n" +
-		mutedStyle.Render("  ↑↓/jk: select card  enter: open  2-8: jump  :: command  r: refresh  q: quit")
+		mutedStyle.Render("  ↑↓/jk: select card  enter: open  2-9: jump  0:Q AI  :: command  r: refresh  q: quit")
 }
 
 func renderCard(title, status string, lines []string, width int, key string, selected bool) string {
@@ -2353,7 +2615,7 @@ func (m model) viewHelpBar() string {
 
 	switch m.currentView {
 	case viewDashboard:
-		return style.Render("↑↓/jk: select  enter: open  2-8: jump  :: command  r: refresh  q: quit")
+		return style.Render("↑↓/jk: select  enter: open  2-9: jump  0:Q AI  :: command  r: refresh  q: quit")
 	case viewBundles:
 		return style.Render("↑↓/jk: navigate  enter: detail  esc: back  /: filter  :: command  r: refresh  q: quit")
 	case viewBlocks:
@@ -2370,6 +2632,8 @@ func (m model) viewHelpBar() string {
 		return style.Render("r: refresh  esc: back  :: command  q: quit")
 	case viewTrader:
 		return style.Render("tab: next field  enter: submit  esc: back  :: command  q: quit")
+	case viewTrading:
+		return style.Render("1: swap  2: positions  3: portfolio  tab: fields  enter: execute  esc: back  q: quit")
 	case viewQAI:
 		return style.Render("m: model picker  enter: send  esc: back  q: quit")
 	case viewModelPicker:
@@ -2625,6 +2889,328 @@ func (m model) handleTraderSubmit() (model, tea.Cmd) {
 			return traderSubmitResultMsg{bundleID: jstr(resp, "bundle_id")}
 		}
 		return traderSubmitResultMsg{bundleID: string(raw)}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Trading view — swap execution, positions, portfolio
+// ---------------------------------------------------------------------------
+
+func (m model) viewTradingContent() string {
+	var sb strings.Builder
+
+	// Sub-tab header
+	tabs := []struct {
+		label string
+		tab   tradingSubTab
+	}{
+		{"Swap", tradingSubSwap},
+		{"Positions", tradingSubPositions},
+		{"Portfolio", tradingSubPortfolio},
+	}
+	var tabParts []string
+	for i, t := range tabs {
+		key := fmt.Sprintf("%d", i+1)
+		if t.tab == m.tradingSubTab {
+			tabParts = append(tabParts,
+				lipgloss.NewStyle().Bold(true).Foreground(colorPrimary).Render(fmt.Sprintf("[%s] %s", key, t.label)))
+		} else {
+			tabParts = append(tabParts,
+				mutedStyle.Render(fmt.Sprintf(" %s  %s", key, t.label)))
+		}
+	}
+	sb.WriteString(titleStyle.Render("Trading") + "  " + strings.Join(tabParts, mutedStyle.Render("  ·  ")))
+	sb.WriteString("\n\n")
+
+	switch m.tradingSubTab {
+	case tradingSubSwap:
+		sb.WriteString(m.viewTradingSwap())
+	case tradingSubPositions:
+		sb.WriteString(m.viewTradingPositions())
+	case tradingSubPortfolio:
+		sb.WriteString(m.viewTradingPortfolio())
+	}
+
+	return sb.String()
+}
+
+func (m model) viewTradingSwap() string {
+	var sb strings.Builder
+
+	leftW := m.width/2 - 4
+	rightW := m.width/2 - 4
+	if leftW < 30 {
+		leftW = m.width - 6
+		rightW = m.width - 6
+	}
+
+	// Swap form
+	fieldLabels := []string{"Token In", "Token Out", "Amount", "Chain", "Slippage %"}
+	fieldInputs := []string{
+		m.tradingTokenInInput.View(),
+		m.tradingTokenOutInput.View(),
+		m.tradingAmountInput.View(),
+		m.tradingSwapChainInput.View(),
+		m.tradingSlippageInput.View(),
+	}
+	var formLines []string
+	for i, lbl := range fieldLabels {
+		cursor := "  "
+		if i == m.tradingSwapField {
+			cursor = lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render("▸ ")
+		}
+		formLines = append(formLines, cursor+mutedStyle.Render(lbl+":")+"\n    "+fieldInputs[i])
+	}
+	formLines = append(formLines, "")
+	formLines = append(formLines, mutedStyle.Render("  tab: next field  enter: execute swap"))
+
+	leftPanel := panelStyle.Width(leftW).Render(
+		titleStyle.Render("Execute Swap") + "\n" + strings.Join(formLines, "\n"))
+
+	// Right: swap info / last result
+	var infoLines []string
+	infoLines = append(infoLines, kv("Protected", "MEV protection via OFA"))
+	infoLines = append(infoLines, kv("Routing", "Best price via DEX aggregation"))
+	infoLines = append(infoLines, kv("Gas", "Auto-estimated"))
+	infoLines = append(infoLines, "")
+	if m.tradingLastSwap != nil {
+		icon := statusHealthy.Render("●")
+		if m.tradingLastSwap.Status != "confirmed" {
+			icon = statusDegraded.Render("●")
+		}
+		infoLines = append(infoLines, icon+" "+kv("Last Swap", trunc(m.tradingLastSwap.TxHash, 24)))
+		infoLines = append(infoLines, kv("Status", m.tradingLastSwap.Status))
+	} else {
+		infoLines = append(infoLines, mutedStyle.Render("No recent swaps"))
+	}
+
+	rightPanel := panelStyle.Width(rightW).Render(
+		titleStyle.Render("Swap Info") + "\n" + strings.Join(infoLines, "\n"))
+
+	if m.width >= 80 {
+		sb.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel))
+	} else {
+		sb.WriteString(leftPanel + "\n" + rightPanel)
+	}
+
+	return sb.String()
+}
+
+func (m model) viewTradingPositions() string {
+	var sb strings.Builder
+
+	if len(m.tradingPositions) == 0 {
+		sb.WriteString(mutedStyle.Render("  No open positions.") + "\n")
+		sb.WriteString(mutedStyle.Render("  Execute a swap to open a position.") + "\n")
+		return sb.String()
+	}
+
+	hdr := fmt.Sprintf("  %-14s %-10s %-6s %-14s %-14s %-12s %-12s %-10s",
+		"Pair", "Chain", "Side", "Entry", "Mark", "Size", "PnL", "PnL %")
+	sb.WriteString(headerStyle.Width(m.width).Render(hdr))
+	sb.WriteString("\n")
+
+	for i, p := range m.tradingPositions {
+		prefix := "  "
+		style := normalStyle
+		if i == m.tradingPosCursor {
+			prefix = "▸ "
+			style = selectedStyle
+		}
+
+		sideStyle := statusHealthy
+		if p.Side == "short" {
+			sideStyle = statusCritical
+		}
+
+		pnlStyle := statusHealthy
+		if len(p.PnL) > 0 && p.PnL[0] == '-' {
+			pnlStyle = statusCritical
+		}
+
+		line := fmt.Sprintf("%s%-14s %-10s %-6s %-14s %-14s %-12s %-12s %-10s",
+			prefix,
+			p.Pair,
+			p.Chain,
+			sideStyle.Render(p.Side),
+			p.EntryPrice,
+			p.MarkPrice,
+			p.Size,
+			pnlStyle.Render(p.PnL),
+			pnlStyle.Render(p.PnLPct+"%"),
+		)
+		sb.WriteString(style.Width(m.width).Render(line))
+		sb.WriteString("\n")
+	}
+
+	// Summary
+	sb.WriteString("\n")
+	totalPnL := 0.0
+	for _, p := range m.tradingPositions {
+		var v float64
+		fmt.Sscanf(p.PnL, "%f", &v)
+		totalPnL += v
+	}
+	pnlStyle := statusHealthy
+	if totalPnL < 0 {
+		pnlStyle = statusCritical
+	}
+	sb.WriteString("  " + kv("Total Positions", fmt.Sprintf("%d", len(m.tradingPositions))))
+	sb.WriteString("    " + pnlStyle.Render(fmt.Sprintf("Total PnL: $%.2f", totalPnL)))
+	sb.WriteString("\n")
+
+	return sb.String()
+}
+
+func (m model) viewTradingPortfolio() string {
+	var sb strings.Builder
+
+	if len(m.tradingPortfolio) == 0 {
+		sb.WriteString(mutedStyle.Render("  No tokens in portfolio.") + "\n")
+		sb.WriteString(mutedStyle.Render("  Connect wallet or execute swaps to see holdings.") + "\n")
+		return sb.String()
+	}
+
+	hdr := fmt.Sprintf("  %-10s %-12s %-18s %-14s %-10s",
+		"Token", "Chain", "Balance", "Value (USD)", "24h")
+	sb.WriteString(headerStyle.Width(m.width).Render(hdr))
+	sb.WriteString("\n")
+
+	totalUSD := 0.0
+	for i, t := range m.tradingPortfolio {
+		prefix := "  "
+		style := normalStyle
+		if i == m.tradingPortCursor {
+			prefix = "▸ "
+			style = selectedStyle
+		}
+
+		pctStyle := statusHealthy
+		if len(t.PricePct) > 0 && t.PricePct[0] == '-' {
+			pctStyle = statusCritical
+		}
+
+		var usd float64
+		fmt.Sscanf(t.ValueUSD, "%f", &usd)
+		totalUSD += usd
+
+		line := fmt.Sprintf("%s%-10s %-12s %-18s $%-13s %s",
+			prefix,
+			t.Symbol,
+			t.Chain,
+			t.Balance,
+			t.ValueUSD,
+			pctStyle.Render(t.PricePct+"%"),
+		)
+		sb.WriteString(style.Width(m.width).Render(line))
+		sb.WriteString("\n")
+	}
+
+	// Total value
+	sb.WriteString("\n")
+	sb.WriteString("  " + kv("Total Value", fmt.Sprintf("$%.2f", totalUSD)))
+	sb.WriteString("    " + kv("Tokens", fmt.Sprintf("%d", len(m.tradingPortfolio))))
+	sb.WriteString("\n")
+
+	return sb.String()
+}
+
+// ---------------------------------------------------------------------------
+// Trading input handling
+// ---------------------------------------------------------------------------
+
+func (m *model) focusTradingField() {
+	m.tradingTokenInInput.Blur()
+	m.tradingTokenOutInput.Blur()
+	m.tradingAmountInput.Blur()
+	m.tradingSwapChainInput.Blur()
+	m.tradingSlippageInput.Blur()
+	switch m.tradingSwapField {
+	case 0:
+		m.tradingTokenInInput.Focus()
+	case 1:
+		m.tradingTokenOutInput.Focus()
+	case 2:
+		m.tradingAmountInput.Focus()
+	case 3:
+		m.tradingSwapChainInput.Focus()
+	case 4:
+		m.tradingSlippageInput.Focus()
+	}
+}
+
+func (m *model) blurTradingFields() {
+	m.tradingTokenInInput.Blur()
+	m.tradingTokenOutInput.Blur()
+	m.tradingAmountInput.Blur()
+	m.tradingSwapChainInput.Blur()
+	m.tradingSlippageInput.Blur()
+}
+
+func (m model) updateTradingInput(msg tea.KeyMsg) (model, tea.Cmd) {
+	var cmd tea.Cmd
+	switch m.tradingSwapField {
+	case 0:
+		m.tradingTokenInInput, cmd = m.tradingTokenInInput.Update(msg)
+	case 1:
+		m.tradingTokenOutInput, cmd = m.tradingTokenOutInput.Update(msg)
+	case 2:
+		m.tradingAmountInput, cmd = m.tradingAmountInput.Update(msg)
+	case 3:
+		m.tradingSwapChainInput, cmd = m.tradingSwapChainInput.Update(msg)
+	case 4:
+		m.tradingSlippageInput, cmd = m.tradingSlippageInput.Update(msg)
+	}
+	return m, cmd
+}
+
+func (m model) handleSwapSubmit() (model, tea.Cmd) {
+	tokenIn := m.tradingTokenInInput.Value()
+	tokenOut := m.tradingTokenOutInput.Value()
+	amount := m.tradingAmountInput.Value()
+	chain := m.tradingSwapChainInput.Value()
+	slippage := m.tradingSlippageInput.Value()
+
+	if tokenIn == "" || tokenOut == "" || amount == "" {
+		m.lastCommandResult = "Token In, Token Out, and Amount are required"
+		m.lastCommandError = true
+		return m, nil
+	}
+	if chain == "" {
+		chain = "ethereum"
+	}
+	if slippage == "" {
+		slippage = "0.5"
+	}
+
+	c := m.client
+	return m, func() tea.Msg {
+		if c == nil {
+			return swapResultMsg{err: fmt.Errorf("not connected")}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		params := map[string]any{
+			"token_in":  tokenIn,
+			"token_out": tokenOut,
+			"amount":    amount,
+			"chain":     chain,
+			"slippage":  slippage,
+			"protected": true,
+		}
+		raw, err := c.Call(ctx, "trade_swap", params)
+		if err != nil {
+			return swapResultMsg{err: err}
+		}
+		var resp map[string]any
+		if json.Unmarshal(raw, &resp) == nil {
+			return swapResultMsg{result: swapResult{
+				TxHash: jstr(resp, "tx_hash"),
+				Status: jstr(resp, "status"),
+			}}
+		}
+		return swapResultMsg{result: swapResult{TxHash: string(raw), Status: "submitted"}}
 	}
 }
 
