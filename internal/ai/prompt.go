@@ -1,8 +1,11 @@
 package ai
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/yoorquezt-labs/yqmev/internal/mcp"
 )
 
 // buildMessages converts conversation history + current question into API messages.
@@ -25,7 +28,7 @@ func buildMessages(req AnalyzeRequest) []map[string]string {
 func mevSystemPrompt(ctx MEVContext) string {
 	var sb strings.Builder
 
-	sb.WriteString("You are Q, an AI-powered MEV assistant running in the quezt terminal dashboard. ")
+	sb.WriteString("You are Q, an AI-powered MEV assistant running in the yqmev terminal dashboard. ")
 	sb.WriteString("You are part of YoorQuezt Technologies — a decentralized MEV infrastructure protocol. ")
 	sb.WriteString("You help users monitor MEV activity, analyze bundles, diagnose issues, and optimize strategies.\n\n")
 
@@ -39,7 +42,7 @@ func mevSystemPrompt(ctx MEVContext) string {
 	sb.WriteString("- Relay marketplace with reputation scoring\n\n")
 
 	sb.WriteString("Be concise — responses appear in a terminal panel. Use short paragraphs. ")
-	sb.WriteString("When suggesting commands, format them as code blocks using quezt CLI. ")
+	sb.WriteString("When suggesting commands, format them as code blocks using yqmev CLI. ")
 	sb.WriteString("When analyzing bundles or MEV, lead with the key insight.\n\n")
 
 	sb.WriteString("── Current MEV Engine State ──\n")
@@ -92,5 +95,55 @@ func mevSystemPrompt(ctx MEVContext) string {
 		}
 	}
 
+	// MCP tools available
+	if ctx.MCPAvailable {
+		sb.WriteString("\n── Available MCP Tools ──\n")
+		sb.WriteString("You have access to live MEV engine tools. To call a tool, respond with a JSON block:\n")
+		sb.WriteString("```tool\n{\"tool\": \"tool_name\", \"args\": {\"param\": \"value\"}}\n```\n")
+		sb.WriteString("The tool result will be injected into the conversation and you can then summarize it.\n")
+		sb.WriteString("IMPORTANT: Only use ONE tool call per response. Wait for the result before calling another.\n\n")
+
+		tools := mcp.AvailableTools()
+		for _, t := range tools {
+			sb.WriteString(fmt.Sprintf("  • %s — %s\n", t.Name, t.Description))
+		}
+		sb.WriteString("\nPrefer using tools over guessing. When asked about live data, ALWAYS call the relevant tool first.\n")
+	}
+
 	return sb.String()
+}
+
+// ParseToolCall extracts a tool call from an AI response.
+// Returns nil if no tool call is found.
+func ParseToolCall(response string) *ToolCall {
+	// Look for ```tool ... ``` blocks
+	start := strings.Index(response, "```tool\n")
+	if start == -1 {
+		start = strings.Index(response, "```tool\r\n")
+	}
+	if start == -1 {
+		return nil
+	}
+	start = strings.Index(response[start:], "\n") + start + 1
+	end := strings.Index(response[start:], "```")
+	if end == -1 {
+		return nil
+	}
+	jsonStr := strings.TrimSpace(response[start : start+end])
+
+	var call struct {
+		Tool string          `json:"tool"`
+		Args json.RawMessage `json:"args"`
+	}
+	if err := json.Unmarshal([]byte(jsonStr), &call); err != nil {
+		return nil
+	}
+	if call.Tool == "" {
+		return nil
+	}
+
+	return &ToolCall{
+		Name: call.Tool,
+		Args: string(call.Args),
+	}
 }

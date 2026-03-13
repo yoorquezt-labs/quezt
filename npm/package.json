@@ -1,5 +1,5 @@
 {
-  "name": "quezt",
+  "name": "yqmev",
   "version": "0.1.0",
   "description": "MEV terminal dashboard — monitor, analyze, and interact with YoorQuezt MEV infrastructure",
   "keywords": [
@@ -14,18 +14,18 @@
     "arbitrage",
     "flashbots"
   ],
-  "homepage": "https://quezt.dev",
+  "homepage": "https://yqmev.dev",
   "bugs": {
-    "url": "https://github.com/yoorquezt-labs/quezt/issues"
+    "url": "https://github.com/yoorquezt-labs/yqmev/issues"
   },
   "license": "MIT",
   "author": "YoorQuezt Labs <eng@yoorquezt.com>",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yoorquezt-labs/quezt.git"
+    "url": "https://github.com/yoorquezt-labs/yqmev.git"
   },
   "bin": {
-    "quezt": "./bin/quezt"
+    "yqmev": "./bin/yqmev"
   },
   "scripts": {
     "postinstall": "node install.js"

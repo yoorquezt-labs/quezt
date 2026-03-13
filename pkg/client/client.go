@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 
 	"github.com/gorilla/websocket"
-	"github.com/yoorquezt-labs/quezt/pkg/jsonrpc"
-	"github.com/yoorquezt-labs/quezt/pkg/types"
+	"github.com/yoorquezt-labs/yqmev/pkg/jsonrpc"
+	"github.com/yoorquezt-labs/yqmev/pkg/types"
 )
 
 // Client connects to the MEV gateway WebSocket and provides a typed API

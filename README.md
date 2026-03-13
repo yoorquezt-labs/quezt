@@ -1,13 +1,13 @@
-<h1 align="center">quezt</h1>
+<h1 align="center">yqmev</h1>
 
 <p align="center">
   <em>MEV terminal dashboard by <a href="https://yoorquezt.io">YoorQuezt</a></em>
 </p>
 
 <p align="center">
-  <a href="https://github.com/yoorquezt-labs/quezt"><img src="https://img.shields.io/badge/go-1.24+-00ADD8?style=flat-square&logo=go" alt="Go"></a>
-  <a href="https://goreportcard.com/report/github.com/yoorquezt-labs/quezt"><img src="https://goreportcard.com/badge/github.com/yoorquezt-labs/quezt?style=flat-square" alt="Go Report"></a>
-  <a href="https://github.com/yoorquezt-labs/quezt/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License"></a>
+  <a href="https://github.com/yoorquezt-labs/yqmev"><img src="https://img.shields.io/badge/go-1.24+-00ADD8?style=flat-square&logo=go" alt="Go"></a>
+  <a href="https://goreportcard.com/report/github.com/yoorquezt-labs/yqmev"><img src="https://goreportcard.com/badge/github.com/yoorquezt-labs/yqmev?style=flat-square" alt="Go Report"></a>
+  <a href="https://github.com/yoorquezt-labs/yqmev/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License"></a>
 </p>
 
 <p align="center">
@@ -24,42 +24,42 @@
 A terminal UI for monitoring, analyzing, and interacting with YoorQuezt MEV infrastructure. Think [k9s](https://k9s.io) for MEV.
 
 ```
-quezt --gateway ws://your-gateway:9099/ws
+yqmev --gateway ws://your-gateway:9099/ws
 ```
 
 ## Install
 
 ```bash
 # npm (recommended)
-npm install -g quezt
+npm install -g yqmev
 
 # homebrew
-brew install yoorquezt-labs/tap/quezt
+brew install yoorquezt-labs/tap/yqmev
 
 # one-line installer
-curl -fsSL https://quezt.dev/install | sh
+curl -fsSL https://yqmev.dev/install | sh
 
 # go install
-go install github.com/yoorquezt-labs/quezt/cmd/quezt@latest
+go install github.com/yoorquezt-labs/yqmev/cmd/yqmev@latest
 
 # from source
-git clone https://github.com/yoorquezt-labs/quezt.git
-cd quezt && make install
+git clone https://github.com/yoorquezt-labs/yqmev.git
+cd yqmev && make install
 ```
 
 ## Quick Start
 
 ```bash
 # 1. Connect to a running MEV gateway
-quezt --gateway ws://localhost:9099/ws
+yqmev --gateway ws://localhost:9099/ws
 
 # 2. With authentication
-quezt --gateway ws://mev.example.com:9099/ws --api-key YOUR_KEY
+yqmev --gateway ws://mev.example.com:9099/ws --api-key YOUR_KEY
 
 # 3. Enable AI assistant (pick a provider)
-quezt --gateway ws://localhost:9099/ws --ai-provider claude --ai-key sk-ant-...
-quezt --gateway ws://localhost:9099/ws --ai-provider openai --ai-key sk-...
-quezt --gateway ws://localhost:9099/ws --ai-provider ollama --ai-model llama3.1
+yqmev --gateway ws://localhost:9099/ws --ai-provider claude --ai-key sk-ant-...
+yqmev --gateway ws://localhost:9099/ws --ai-provider openai --ai-key sk-...
+yqmev --gateway ws://localhost:9099/ws --ai-provider ollama --ai-model llama3.1
 ```
 
 ### Flags
@@ -133,9 +133,9 @@ The `pkg/` packages can be imported as a Go SDK in your own projects:
 
 ```go
 import (
-    "github.com/yoorquezt-labs/quezt/pkg/client"
-    "github.com/yoorquezt-labs/quezt/pkg/jsonrpc"
-    "github.com/yoorquezt-labs/quezt/pkg/types"
+    "github.com/yoorquezt-labs/yqmev/pkg/client"
+    "github.com/yoorquezt-labs/yqmev/pkg/jsonrpc"
+    "github.com/yoorquezt-labs/yqmev/pkg/types"
 )
 
 // Connect to the MEV gateway
@@ -175,7 +175,7 @@ for event := range events {
 
 ```
                     ┌─────────────────────────┐
-                    │     quezt (terminal)     │
+                    │     yqmev (terminal)     │
                     │  BubbleTea + Lipgloss    │
                     │  13 tabs, AI assistant   │
                     └────────────┬────────────┘
@@ -197,7 +197,7 @@ for event := range events {
     └────────────────┘ └─────────────────┘ └────────────────┘
 ```
 
-`quezt` is a **pure client** — it connects to the YoorQuezt MEV gateway over WebSocket and renders data in the terminal. No private engine code is included in the binary.
+`yqmev` is a **pure client** — it connects to the YoorQuezt MEV gateway over WebSocket and renders data in the terminal. No private engine code is included in the binary.
 
 ## Development
 
@@ -210,12 +210,12 @@ for event := range events {
 
 ```bash
 # clone
-git clone https://github.com/yoorquezt-labs/quezt.git
-cd quezt
+git clone https://github.com/yoorquezt-labs/yqmev.git
+cd yqmev
 
 # build (use GOWORK=off if inside a Go workspace)
 GOWORK=off make build
-./bin/quezt --gateway ws://localhost:9099/ws
+./bin/yqmev --gateway ws://localhost:9099/ws
 
 # install to $GOPATH/bin
 GOWORK=off make install
@@ -252,8 +252,8 @@ ls dist/
 ### Project Structure
 
 ```
-quezt/
-├── cmd/quezt/           # TUI entry point (3000+ lines, 13 tabs)
+yqmev/
+├── cmd/yqmev/           # TUI entry point (3000+ lines, 13 tabs)
 ├── internal/ai/         # AI providers (Claude, OpenAI, Ollama)
 ├── pkg/
 │   ├── client/          # WebSocket JSON-RPC 2.0 SDK

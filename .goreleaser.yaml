@@ -1,10 +1,10 @@
 version: 2
-project_name: quezt
+project_name: yqmev
 
 builds:
-  - id: quezt
-    main: ./cmd/quezt
-    binary: quezt
+  - id: yqmev
+    main: ./cmd/yqmev
+    binary: yqmev
     env:
       - CGO_ENABLED=0
     goos:
@@ -21,9 +21,9 @@ builds:
       - -X main.date={{.Date}}
 
 archives:
-  - id: quezt
+  - id: yqmev
     builds:
-      - quezt
+      - yqmev
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
@@ -41,23 +41,23 @@ changelog:
       - "^ci:"
 
 brews:
-  - name: quezt
+  - name: yqmev
     repository:
       owner: yoorquezt-labs
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Formula
-    homepage: "https://quezt.dev"
+    homepage: "https://yqmev.dev"
     description: "MEV terminal dashboard — monitor, analyze, and interact with YoorQuezt MEV infrastructure"
     license: "MIT"
     install: |
-      bin.install "quezt"
+      bin.install "yqmev"
     test: |
-      system "#{bin}/quezt", "--version"
+      system "#{bin}/yqmev", "--version"
 
 release:
   github:
     owner: yoorquezt-labs
-    name: quezt
+    name: yqmev
   prerelease: auto
   name_template: "v{{.Version}}"

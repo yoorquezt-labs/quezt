@@ -1,9 +1,9 @@
 #!/bin/sh
-# curl -fsSL https://quezt.dev/install | sh
+# curl -fsSL https://yqmev.dev/install | sh
 set -e
 
-REPO="yoorquezt-labs/quezt"
-INSTALL_DIR="${QUEZT_INSTALL_DIR:-/usr/local/bin}"
+REPO="yoorquezt-labs/yqmev"
+INSTALL_DIR="${YQMEV_INSTALL_DIR:-/usr/local/bin}"
 
 # Detect OS and architecture
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -28,29 +28,29 @@ if [ -z "$VERSION" ]; then
   exit 1
 fi
 
-ARCHIVE="quezt_${OS}_${ARCH}.tar.gz"
+ARCHIVE="yqmev_${OS}_${ARCH}.tar.gz"
 URL="https://github.com/${REPO}/releases/download/v${VERSION}/${ARCHIVE}"
 
-echo "Installing quezt v${VERSION} (${OS}/${ARCH})..."
+echo "Installing yqmev v${VERSION} (${OS}/${ARCH})..."
 
 TMP_DIR=$(mktemp -d)
 trap "rm -rf $TMP_DIR" EXIT
 
 curl -fsSL "$URL" -o "$TMP_DIR/$ARCHIVE"
-tar -xzf "$TMP_DIR/$ARCHIVE" -C "$TMP_DIR" quezt
+tar -xzf "$TMP_DIR/$ARCHIVE" -C "$TMP_DIR" yqmev
 
 if [ -w "$INSTALL_DIR" ]; then
-  mv "$TMP_DIR/quezt" "$INSTALL_DIR/quezt"
+  mv "$TMP_DIR/yqmev" "$INSTALL_DIR/yqmev"
 else
   echo "Need sudo to install to $INSTALL_DIR"
-  sudo mv "$TMP_DIR/quezt" "$INSTALL_DIR/quezt"
+  sudo mv "$TMP_DIR/yqmev" "$INSTALL_DIR/yqmev"
 fi
 
-chmod +x "$INSTALL_DIR/quezt"
+chmod +x "$INSTALL_DIR/yqmev"
 
 echo ""
-echo "  quezt v${VERSION} installed to $INSTALL_DIR/quezt"
+echo "  yqmev v${VERSION} installed to $INSTALL_DIR/yqmev"
 echo ""
 echo "  Get started:"
-echo "    quezt --gateway ws://your-gateway:9099/ws"
+echo "    yqmev --gateway ws://your-gateway:9099/ws"
 echo ""

@@ -15,8 +15,10 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/yoorquezt-labs/quezt/internal/ai"
-	"github.com/yoorquezt-labs/quezt/pkg/client"
+	"github.com/yoorquezt-labs/yqmev/internal/ai"
+	"github.com/yoorquezt-labs/yqmev/internal/logging"
+	"github.com/yoorquezt-labs/yqmev/internal/mcp"
+	"github.com/yoorquezt-labs/yqmev/pkg/client"
 )
 
 // ---------------------------------------------------------------------------
@@ -278,6 +280,11 @@ type commandResultMsg struct {
 }
 type aiTokenMsg struct{ token string }
 type aiDoneMsg struct{ err error }
+type mcpToolResultMsg struct {
+	toolName string
+	result   string
+	err      error
+}
 
 // ---------------------------------------------------------------------------
 // Model
@@ -367,6 +374,10 @@ type model struct {
 	aiQState     int // 0=idle,1=listening,2=thinking,3=talking,4=success,5=error
 	aiTokenCh    chan string
 	aiErrCh      chan error
+
+	// MCP
+	mcpClient    *mcp.Client
+	mcpAvailable bool
 
 	// Misc
 	err       error
@@ -519,14 +530,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				selected := availableModels[m.modelPickerCursor]
 				switch selected.Provider {
 				case "claude":
-					key := envOr("ANTHROPIC_API_KEY", envOr("QUEZT_AI_KEY", ""))
+					key := envOr("ANTHROPIC_API_KEY", envOr("YQMEV_AI_KEY", ""))
 					if key != "" {
 						m.aiProvider = ai.NewClaude(key, selected.Model)
 					} else {
 						m.err = fmt.Errorf("ANTHROPIC_API_KEY not set")
 					}
 				case "openai":
-					key := envOr("OPENAI_API_KEY", envOr("QUEZT_AI_KEY", ""))
+					key := envOr("OPENAI_API_KEY", envOr("YQMEV_AI_KEY", ""))
 					if key != "" {
 						m.aiProvider = ai.NewOpenAI(key, selected.Model, "")
 					} else {
@@ -700,10 +711,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.connected = false
 			m.err = fmt.Errorf("connect: %v", msg.err)
+			logging.Error("gateway connection failed", "error", msg.err)
 		} else {
 			m.client = msg.c
 			m.connected = true
 			m.err = nil
+			logging.Info("gateway connected", "url", m.cfg.GatewayURL)
 			cmds = append(cmds, m.fetchDashboard(), subscribeCmd(m.client))
 		}
 
@@ -746,6 +759,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case wsClosedMsg:
 		m.wsCh = nil
+		logging.Warn("websocket closed")
 
 	// Data messages
 	case dashboardMsg:
@@ -857,11 +871,69 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.aiMessages = append(m.aiMessages, ai.Message{Role: "assistant", Content: "Error: " + msg.err.Error()})
 			m.aiQState = 5 // error
+			logging.Error("ai stream error", "error", msg.err)
 		} else {
-			m.aiMessages = append(m.aiMessages, ai.Message{Role: "assistant", Content: m.aiStreamBuf})
-			m.aiQState = 4 // success
+			logging.Debug("ai stream complete", "length", len(m.aiStreamBuf))
+			// Check if the AI wants to call an MCP tool
+			if tc := ai.ParseToolCall(m.aiStreamBuf); tc != nil && m.mcpAvailable {
+				// Show the AI's reasoning before the tool call
+				m.aiMessages = append(m.aiMessages, ai.Message{Role: "assistant", Content: m.aiStreamBuf})
+				m.aiQState = 2 // thinking (waiting for tool)
+				m.aiStreaming = true
+				m.aiStreamBuf = ""
+				mcpC := m.mcpClient
+				toolName := tc.Name
+				toolArgs := tc.Args
+				logging.Info("mcp tool call", "tool", toolName)
+				cmds = append(cmds, func() tea.Msg {
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					result, err := mcpC.CallTool(ctx, toolName, json.RawMessage(toolArgs))
+					if err != nil {
+						logging.Error("mcp tool failed", "tool", toolName, "error", err)
+					} else {
+						logging.Debug("mcp tool result", "tool", toolName, "length", len(result))
+					}
+					return mcpToolResultMsg{toolName: toolName, result: result, err: err}
+				})
+			} else {
+				m.aiMessages = append(m.aiMessages, ai.Message{Role: "assistant", Content: m.aiStreamBuf})
+				m.aiQState = 4 // success
+			}
 		}
 		m.aiStreamBuf = ""
+
+	case mcpToolResultMsg:
+		// Tool result received — feed it back to the AI as context
+		var toolContent string
+		if msg.err != nil {
+			toolContent = fmt.Sprintf("[Tool %s failed: %s]", msg.toolName, msg.err.Error())
+		} else {
+			toolContent = fmt.Sprintf("[Tool %s result]\n%s", msg.toolName, msg.result)
+		}
+		// Add tool result as a user message (context injection)
+		m.aiMessages = append(m.aiMessages, ai.Message{Role: "user", Content: toolContent})
+		// Re-run AI with the tool result so it can summarize
+		m.aiStreamBuf = ""
+		m.aiTokenCh = make(chan string, 64)
+		m.aiErrCh = make(chan error, 1)
+		tokenCh := m.aiTokenCh
+		errCh := m.aiErrCh
+		provider := m.aiProvider
+		history := make([]ai.Message, len(m.aiMessages))
+		copy(history, m.aiMessages)
+		mevCtx := m.buildMEVContext()
+		cmds = append(cmds, func() tea.Msg {
+			req := ai.AnalyzeRequest{
+				Question:   "Based on the tool result above, provide a concise summary for the user.",
+				MEVContext: mevCtx,
+				History:    history,
+			}
+			go func() {
+				errCh <- provider.Stream(context.Background(), req, tokenCh)
+			}()
+			return waitForToken(tokenCh, errCh)()
+		})
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -1502,7 +1574,7 @@ func (m model) viewHeader() string {
 	}
 
 	// Left: logo + connection
-	left := lipgloss.NewStyle().Bold(true).Foreground(colorPrimary).Render("QUEZT") +
+	left := lipgloss.NewStyle().Bold(true).Foreground(colorPrimary).Render("YQMEV") +
 		lbl.Render(" · ") + connIcon + " " + connLabel
 
 	if m.wsEvents > 0 {
@@ -2112,7 +2184,7 @@ func (m model) viewBundleDetailContent() string {
 		sb.WriteString(mutedStyle.Render("  • Insufficient gas — bid didn't cover execution cost\n"))
 		sb.WriteString(mutedStyle.Render("  • Frontrun — another searcher landed first\n"))
 		sb.WriteString(mutedStyle.Render("  • Slippage — price moved beyond tolerance\n"))
-		sb.WriteString(mutedStyle.Render("  Tip: Use `quezt bundle simulate` to pre-check\n"))
+		sb.WriteString(mutedStyle.Render("  Tip: Use `yqmev bundle simulate` to pre-check\n"))
 	}
 
 	sb.WriteString("\n")
@@ -3075,6 +3147,7 @@ func (m model) buildMEVContext() ai.MEVContext {
 		SandwichBlocked:  m.ofa.sandwichBlocked,
 		MEVCaptured:      m.ofa.mevCaptured,
 		SolverCount:      m.solverCount,
+		MCPAvailable:     m.mcpAvailable,
 	}
 }
 
@@ -3318,11 +3391,20 @@ func renderQMascotMEV(frame int) string {
 // ---------------------------------------------------------------------------
 
 func main() {
-	gwURL := flag.String("gw", envOr("QUEZT_GATEWAY", "ws://localhost:9099/ws"), "Gateway WebSocket URL")
-	apiKey := flag.String("key", envOr("QUEZT_API_KEY", ""), "API key")
-	aiProviderFlag := flag.String("ai", envOr("QUEZT_AI_PROVIDER", "claude"), "AI provider: claude, openai, ollama")
-	aiModelFlag := flag.String("ai-model", envOr("QUEZT_AI_MODEL", ""), "AI model override")
+	gwURL := flag.String("gw", envOr("YQMEV_GATEWAY", "ws://localhost:9099/ws"), "Gateway WebSocket URL")
+	apiKey := flag.String("key", envOr("YQMEV_API_KEY", ""), "API key")
+	aiProviderFlag := flag.String("ai", envOr("YQMEV_AI_PROVIDER", "claude"), "AI provider: claude, openai, ollama")
+	aiModelFlag := flag.String("ai-model", envOr("YQMEV_AI_MODEL", ""), "AI model override")
+	mcpURL := flag.String("mcp", envOr("YQMEV_MCP_URL", "http://localhost:3101"), "MCP MEV server URL")
+	logDir := flag.String("log-dir", envOr("YQMEV_LOG_DIR", ""), "Log directory (default: ~/.yqmev/logs/)")
 	flag.Parse()
+
+	// Initialize zap logger
+	if err := logging.Init(*logDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: logging init failed: %v\n", err)
+	}
+	defer logging.Close()
+	logging.Info("yqmev starting", "gateway", *gwURL, "ai", *aiProviderFlag, "mcp", *mcpURL)
 
 	cfg := client.Config{
 		GatewayURL: *gwURL,
@@ -3334,12 +3416,12 @@ func main() {
 	// Initialize AI provider
 	switch *aiProviderFlag {
 	case "claude":
-		key := envOr("ANTHROPIC_API_KEY", envOr("QUEZT_AI_KEY", ""))
+		key := envOr("ANTHROPIC_API_KEY", envOr("YQMEV_AI_KEY", ""))
 		if key != "" {
 			m.aiProvider = ai.NewClaude(key, *aiModelFlag)
 		}
 	case "openai":
-		key := envOr("OPENAI_API_KEY", envOr("QUEZT_AI_KEY", ""))
+		key := envOr("OPENAI_API_KEY", envOr("YQMEV_AI_KEY", ""))
 		if key != "" {
 			m.aiProvider = ai.NewOpenAI(key, *aiModelFlag, "")
 		}
@@ -3351,11 +3433,28 @@ func main() {
 		m.aiProvider = ai.NewOllama(model, envOr("OLLAMA_URL", ""))
 	}
 
+	// Initialize MCP client
+	mc := mcp.NewClient(*mcpURL)
+	m.mcpClient = mc
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	m.mcpAvailable = mc.Healthy(ctx)
+	cancel()
+	logging.Info("mcp status", "url", *mcpURL, "available", m.mcpAvailable)
+
+	if m.aiProvider != nil {
+		logging.Info("ai provider ready", "provider", m.aiProvider.Name())
+	} else {
+		logging.Warn("no ai provider configured")
+	}
+
 	p := tea.NewProgram(m, tea.WithAltScreen())
+	logging.Info("starting TUI")
 	if _, err := p.Run(); err != nil {
+		logging.Error("TUI exited with error", "error", err)
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+	logging.Info("yqmev shutdown")
 }
 
 func envOr(key, fallback string) string {

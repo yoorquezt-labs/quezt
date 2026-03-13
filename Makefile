@@ -6,10 +6,10 @@ LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.dat
 .PHONY: build install clean test lint release snapshot
 
 build:
-	go build -ldflags "$(LDFLAGS)" -o bin/quezt ./cmd/quezt
+	go build -ldflags "$(LDFLAGS)" -o bin/yqmev ./cmd/yqmev
 
 install:
-	go install -ldflags "$(LDFLAGS)" ./cmd/quezt
+	go install -ldflags "$(LDFLAGS)" ./cmd/yqmev
 
 clean:
 	rm -rf bin/ dist/

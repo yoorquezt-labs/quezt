@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-// Downloads the platform-specific quezt binary from GitHub Releases.
-// This is the postinstall script for `npm install -g quezt`.
+// Downloads the platform-specific yqmev binary from GitHub Releases.
+// This is the postinstall script for `npm install -g yqmev`.
 
 const os = require("os");
 const fs = require("fs");
@@ -9,19 +9,19 @@ const path = require("path");
 const https = require("https");
 const { execSync } = require("child_process");
 
-const REPO = "yoorquezt-labs/quezt";
-const BIN_NAME = os.platform() === "win32" ? "quezt.exe" : "quezt";
+const REPO = "yoorquezt-labs/yqmev";
+const BIN_NAME = os.platform() === "win32" ? "yqmev.exe" : "yqmev";
 
 function getPlatform() {
   const platform = os.platform();
   const arch = os.arch();
 
   const platforms = {
-    "darwin-x64": "quezt_darwin_amd64",
-    "darwin-arm64": "quezt_darwin_arm64",
-    "linux-x64": "quezt_linux_amd64",
-    "linux-arm64": "quezt_linux_arm64",
-    "win32-x64": "quezt_windows_amd64",
+    "darwin-x64": "yqmev_darwin_amd64",
+    "darwin-arm64": "yqmev_darwin_arm64",
+    "linux-x64": "yqmev_linux_amd64",
+    "linux-arm64": "yqmev_linux_arm64",
+    "win32-x64": "yqmev_windows_amd64",
   };
 
   const key = `${platform}-${arch}`;
@@ -29,7 +29,7 @@ function getPlatform() {
 
   if (!name) {
     console.error(`Unsupported platform: ${key}`);
-    console.error("Please install from source: go install github.com/yoorquezt-labs/quezt/cmd/quezt@latest");
+    console.error("Please install from source: go install github.com/yoorquezt-labs/yqmev/cmd/yqmev@latest");
     process.exit(1);
   }
 
@@ -44,7 +44,7 @@ function getVersion() {
 function download(url, dest) {
   return new Promise((resolve, reject) => {
     const follow = (url) => {
-      https.get(url, { headers: { "User-Agent": "quezt-npm" } }, (res) => {
+      https.get(url, { headers: { "User-Agent": "yqmev-npm" } }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           follow(res.headers.location);
           return;
@@ -75,7 +75,7 @@ async function main() {
   const binDir = path.join(__dirname, "bin");
   const tmpFile = path.join(__dirname, `tmp_${archive}`);
 
-  console.log(`Downloading quezt v${version} for ${platform}...`);
+  console.log(`Downloading yqmev v${version} for ${platform}...`);
 
   fs.mkdirSync(binDir, { recursive: true });
 
@@ -91,10 +91,10 @@ async function main() {
     fs.chmodSync(path.join(binDir, BIN_NAME), 0o755);
     fs.unlinkSync(tmpFile);
 
-    console.log(`quezt v${version} installed successfully!`);
+    console.log(`yqmev v${version} installed successfully!`);
   } catch (err) {
-    console.error(`Failed to install quezt: ${err.message}`);
-    console.error("Fallback: go install github.com/yoorquezt-labs/quezt/cmd/quezt@latest");
+    console.error(`Failed to install yqmev: ${err.message}`);
+    console.error("Fallback: go install github.com/yoorquezt-labs/yqmev/cmd/yqmev@latest");
 
     // Clean up
     try { fs.unlinkSync(tmpFile); } catch {}
