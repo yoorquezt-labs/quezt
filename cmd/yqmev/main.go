@@ -152,6 +152,43 @@ var availableModels = []modelOption{
 	{"DeepSeek R1", "ollama", "deepseek-r1", 4, 2, 0},
 }
 
+// ---------------------------------------------------------------------------
+// Supported chains
+// ---------------------------------------------------------------------------
+
+type chainCategory struct {
+	Name   string
+	Chains []string
+}
+
+var supportedChainCategories = []chainCategory{
+	{"EVM", []string{
+		"Ethereum", "Arbitrum", "Base", "Optimism", "Polygon",
+		"BSC", "Avalanche", "zkSync", "Hyperliquid", "Monad",
+		"Berachain", "Sei", "MegaETH", "Unichain",
+	}},
+	{"Non-EVM", []string{"Solana", "Sui"}},
+	{"Cosmos", []string{"Injective", "Osmosis"}},
+}
+
+func totalSupportedChains() int {
+	n := 0
+	for _, cat := range supportedChainCategories {
+		n += len(cat.Chains)
+	}
+	return n
+}
+
+func chainCardLines() []string {
+	lines := []string{
+		kv("Total Chains", fmt.Sprintf("%d", totalSupportedChains())),
+	}
+	for _, cat := range supportedChainCategories {
+		lines = append(lines, kv(cat.Name, fmt.Sprintf("%d", len(cat.Chains))))
+	}
+	return lines
+}
+
 type dashboardData struct {
 	healthy    bool
 	poolSize   int
@@ -1160,7 +1197,7 @@ func (m model) goBack() (model, tea.Cmd) {
 	return m, m.fetchCurrentView()
 }
 
-const dashCardCount = 9
+const dashCardCount = 10
 
 func (m *model) cursorDown() {
 	switch m.currentView {
@@ -1222,6 +1259,7 @@ var dashTargets = []struct {
 	{viewRelays, "relays"},
 	{viewIntents, "intents"},
 	{viewSystem, "system"},
+	{viewSystem, "system"}, // Chains card → system view
 	{viewOFA, "ofa"},
 	{viewTrader, "trader"},
 	{viewTrading, "trading"},
@@ -1984,6 +2022,13 @@ func (m model) viewDashboardContent() string {
 			},
 		},
 		{
+			title:    "Chains",
+			status:   "healthy",
+			shortcut: " ",
+			label:    "chains",
+			lines:    chainCardLines(),
+		},
+		{
 			title:    "OFA Protection",
 			status:   statusFromCount(m.ofa.txsProtected),
 			shortcut: "7",
@@ -2599,7 +2644,60 @@ func (m model) viewSystemContent() string {
 	sb.WriteString(panelStyle.Width(m.width - 6).Render(
 		titleStyle.Render("Relay Marketplace") + "\n" + strings.Join(relayLines, "\n")))
 
+	sb.WriteString("\n\n")
+	sb.WriteString(renderChainStatus(m.width))
+
 	return sb.String()
+}
+
+// ---------------------------------------------------------------------------
+// Chain status panel for system view
+// ---------------------------------------------------------------------------
+
+func renderChainStatus(width int) string {
+	fullW := width - 6
+
+	categoryStyle := lipgloss.NewStyle().Bold(true).Foreground(colorSecondary).MarginBottom(0)
+	chainOk := lipgloss.NewStyle().Foreground(colorSuccess)
+	chainLabel := lipgloss.NewStyle().Foreground(colorText)
+
+	var catPanels []string
+	for _, cat := range supportedChainCategories {
+		var lines []string
+		for _, ch := range cat.Chains {
+			lines = append(lines, chainOk.Render("●")+" "+chainLabel.Render(ch))
+		}
+		header := categoryStyle.Render(cat.Name) +
+			mutedStyle.Render(fmt.Sprintf(" (%d)", len(cat.Chains)))
+		content := header + "\n" + strings.Join(lines, "\n")
+		catPanels = append(catPanels, content)
+	}
+
+	// Layout: side by side if wide enough, else stacked
+	if width >= 100 {
+		catW := fullW/len(catPanels) - 2
+		if catW < 20 {
+			catW = 20
+		}
+		var panels []string
+		for _, cp := range catPanels {
+			panels = append(panels, panelStyle.Width(catW).Render(cp))
+		}
+		chainGrid := lipgloss.JoinHorizontal(lipgloss.Top, panels...)
+		return panelStyle.Width(fullW).Render(
+			titleStyle.Render(fmt.Sprintf("Supported Chains (%d)", totalSupportedChains())) +
+				"\n\n" + chainGrid)
+	}
+
+	// Stacked layout for narrow terminals
+	var sb strings.Builder
+	for _, cp := range catPanels {
+		sb.WriteString(panelStyle.Width(fullW - 4).Render(cp))
+		sb.WriteString("\n")
+	}
+	return panelStyle.Width(fullW).Render(
+		titleStyle.Render(fmt.Sprintf("Supported Chains (%d)", totalSupportedChains())) +
+			"\n\n" + sb.String())
 }
 
 // ---------------------------------------------------------------------------
